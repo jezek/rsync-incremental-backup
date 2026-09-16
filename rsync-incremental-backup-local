@@ -3,7 +3,7 @@
 # Configuration variables (change as you wish)
 src="${1:-/path/to/source}"
 dst="${2:-/path/to/target}"
-backupDepth=${backupDepth:-7}
+backupDepth=${backupDepth:-0}
 timeout=${timeout:-1800}
 pathBak0="${pathBak0:-data}"
 rotationLockFileName="${rotationLockFileName:-.rsync-rotation-lock}"
@@ -23,6 +23,11 @@ bak0="${dst}/${pathBak0}"
 rotationLockFilePath="${dst}/${rotationLockFileName}"
 logPath="${dst}/${pathBakN}/${logFolderName}"
 logFile="${tempLogPath}/${logName}"
+
+if [[ ! "${backupDepth}" =~ ^[0-9]+$ ]]; then
+	echo "backupDepth must be a non-negative integer" >&2
+	exit 2
+fi
 
 # Prepare own folder
 mkdir -p "${tempLogPath}"
@@ -63,7 +68,10 @@ rsync -rhv --remove-source-files --exclude="${logName}" --log-file="${logFile}" 
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending finished"
 
 # Rotate backups if last rsync succeeded ..
-if ([ ! -e "${rotationLockFilePath}" ])
+if [ "${backupDepth}" = 0 ]
+then
+	writeToLog "\\n[$(${dateCmd} -Is)] Backup rotation is disabled (backupDepth=0)\\n"
+elif ([ ! -e "${rotationLockFilePath}" ])
 then
 	# .. and there is previous data
 	if [ -d "${bak0}" ]
@@ -102,9 +110,16 @@ touch "${rotationLockFilePath}"
 writeToLog "[$(${dateCmd} -Is)] Backup begins\\n"
 
 # Do the backup
-if rsync -achv --progress --timeout="${timeout}" --delete -W --link-dest="${bak1}/" \
-	--log-file="${logFile}" --exclude="${ownFolderPath}" --chmod=+r \
-	--exclude-from="${exclusionFilePath}" "${src}/" "${bak0}/"
+rsyncOptions=(-achv --progress --timeout="${timeout}" --delete -W \
+	--log-file="${logFile}" --exclude="${ownFolderPath}" \
+	--chmod=Du+rwx,Fu+rw,a+r --exclude-from="${exclusionFilePath}")
+if [ "${backupDepth}" -gt 0 ]; then
+	rsyncOptions+=(--link-dest="${bak1}/")
+fi
+if [ -n "${backupTargetOwner:-}" ]; then
+	rsyncOptions+=(--chown="${backupTargetOwner}")
+fi
+if rsync "${rsyncOptions[@]}" "${src}/" "${bak0}/"
 then
 	writeToLog "\\n[$(${dateCmd} -Is)] Backup completed successfully\\n"
 

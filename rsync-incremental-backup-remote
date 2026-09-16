@@ -4,7 +4,7 @@
 src="${1:-/path/to/source}"
 dst="${2:-/path/to/target}"
 remote="${3:-ssh_remote}"
-backupDepth=${backupDepth:-7}
+backupDepth=${backupDepth:-0}
 timeout=${timeout:-1800}
 pathBak0="${pathBak0:-data}"
 partialFolderName="${partialFolderName:-.rsync-partial}"
@@ -30,6 +30,11 @@ rotationLockFilePath="${dst}/${rotationLockFileName}"
 logPath="${dst}/${pathBakN}/${logFolderName}"
 remoteLogPath="${remote}:${logPath}"
 logFile="${tempLogPath}/${logName}"
+
+if [[ ! "${backupDepth}" =~ ^[0-9]+$ ]]; then
+	echo "backupDepth must be a non-negative integer" >&2
+	exit 2
+fi
 
 # Prepare own folder
 mkdir -p "${tempLogPath}"
@@ -78,8 +83,29 @@ then
 	exit 1
 fi
 
-# Prepare paths at destination
-ssh "${sshParams[@]}" "${remote}" "mkdir -p ${dst} ${logPath}"
+# Prepare and validate paths at destination. The SSH user must own (or be
+# able to write) every directory in the destination tree before --delete.
+if ! ssh "${sshParams[@]}" "${remote}" "mkdir -p ${dst}"; then
+	writeToLog "\\n[$(${dateCmd} -Is)] Could not prepare the remote destination directory\\n"
+	exit 1
+fi
+
+# The receiving SSH user must be able to maintain the live backup tree.
+# Existing read-only/root-owned directories are rejected before --delete.
+if ! ssh "${sshParams[@]}" "${remote}" sh -s -- "${dst}" <<'REMOTE_DESTINATION_CHECK'
+dst="$1"
+[ -d "$dst" ] && [ -w "$dst" ] && [ -x "$dst" ] || exit 1
+badDirectories="$(find "$dst" -xdev -type d \( ! -writable -o ! -executable \) -print -quit 2>/dev/null)" || exit 1
+[ -z "$badDirectories" ]
+REMOTE_DESTINATION_CHECK
+then
+	writeToLog "\\n[$(${dateCmd} -Is)] Remote backup tree is not writable by the SSH user; refusing to continue\\n"
+	exit 1
+fi
+if ! ssh "${sshParams[@]}" "${remote}" "mkdir -p ${logPath}"; then
+	writeToLog "\\n[$(${dateCmd} -Is)] Could not prepare the remote backup log directory\\n"
+	exit 1
+fi
 
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending begins\\n"
 
@@ -90,7 +116,10 @@ rsync "${rsyncShellParams[@]}" -rhvz --remove-source-files --exclude="${logName}
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending finished"
 
 # Rotate backups if last rsync succeeded ..
-if (ssh "${sshParams[@]}" "${remote}" "[ ! -d ${partialFolderPath} ] && [ ! -e ${rotationLockFilePath} ]")
+if [ "${backupDepth}" = 0 ]
+then
+	writeToLog "\\n[$(${dateCmd} -Is)] Backup rotation is disabled (backupDepth=0)\\n"
+elif (ssh "${sshParams[@]}" "${remote}" "[ ! -d ${partialFolderPath} ] && [ ! -e ${rotationLockFilePath} ]")
 then
 	# .. and there is previous data
 	if (ssh "${sshParams[@]}" "${remote}" "[ -d ${bak0} ]")
@@ -129,9 +158,14 @@ ssh "${sshParams[@]}" "${remote}" "touch ${rotationLockFilePath}"
 writeToLog "[$(${dateCmd} -Is)] Backup begins\\n"
 
 # Do the backup
-if rsync "${rsyncShellParams[@]}" -achvz --progress --timeout="${timeout}" --delete --no-W \
-	--partial-dir="${partialFolderName}" --link-dest="${bak1}/" --log-file="${logFile}" --exclude="${ownFolderPath}" \
-	--chmod=+r --exclude-from="${exclusionFilePath}" "${src}/" "${remoteBak0}/"
+rsyncOptions=(-achvz --progress --timeout="${timeout}" --delete --no-W \
+	--partial-dir="${partialFolderName}" --log-file="${logFile}" \
+	--exclude="${ownFolderPath}" --chmod=Du+rwx,Fu+rw,a+r \
+	--no-owner --no-group --exclude-from="${exclusionFilePath}")
+if [ "${backupDepth}" -gt 0 ]; then
+	rsyncOptions+=(--link-dest="${bak1}/")
+fi
+if rsync "${rsyncShellParams[@]}" "${rsyncOptions[@]}" "${src}/" "${remoteBak0}/"
 then
 	writeToLog "\\n[$(${dateCmd} -Is)] Backup completed successfully\\n"
 

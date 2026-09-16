@@ -24,7 +24,7 @@ You can set some configuration variables to customize the script:
 * `src`: Path to source directory. Backups will include it's content. May be a relative or absolute path. Overwritable by parameters.
 * `dst`: Path to target directory. Backups will be placed here. **Must** be an absolute path. Overwritable by parameters.
 * `remote`: *ssh_config* host name to connect to remote host (only for remote version). Overwritable by parameters.
-* `backupDepth`: Number of backups to keep. When limit is reached, the oldest get deleted.
+* `backupDepth`: Number of historical backups to keep. `0` disables rotation and keeps only the current `data` tree; when greater than zero, the oldest backup is deleted at the limit.
 * `timeout`: Timeout to cancel backup process, if it's not responding.
 * `pathBak0`: Directory inside `dst` where the more recent backup is stored.
 * `partialFolderName`: Directory inside `dst` where partial files are stored.
