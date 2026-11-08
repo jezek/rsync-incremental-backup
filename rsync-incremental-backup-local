@@ -62,8 +62,10 @@ mkdir -p "${dst}" "${logPath}"
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending begins\\n"
 
 # Send old pending logs to destination
-rsync -rhv --remove-source-files --exclude="${logName}" --log-file="${logFile}" \
-	"${tempLogPath}/" "${logPath}/"
+if ! rsync -rhv --remove-source-files --exclude="${logName}" --log-file="${logFile}" \
+	"${tempLogPath}/" "${logPath}/"; then
+	writeToLog "Pending log transfer failed; unsent logs retained locally."
+fi
 
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending finished"
 
@@ -110,9 +112,12 @@ touch "${rotationLockFilePath}"
 writeToLog "[$(${dateCmd} -Is)] Backup begins\\n"
 
 # Do the backup
-rsyncOptions=(-achv --progress --timeout="${timeout}" --delete -W \
+rsyncOptions=(-ahv --progress --timeout="${timeout}" --delete -W \
 	--log-file="${logFile}" --exclude="${ownFolderPath}" \
 	--chmod=Du+rwx,Fu+rw,a+r --exclude-from="${exclusionFilePath}")
+if [ "${backupChecksum:-no}" = yes ]; then
+	rsyncOptions+=(--checksum)
+fi
 if [ "${backupDepth}" -gt 0 ]; then
 	rsyncOptions+=(--link-dest="${bak1}/")
 fi
@@ -132,6 +137,8 @@ else
 fi
 
 # Send the complete log file to destination
-mv "${logFile}" "${logPath}"
+if ! mv "${logFile}" "${logPath}"; then
+	writeToLog "Log copy failed; retained locally for the next run: ${logFile}"
+fi
 
 exit "${rsyncFail}"

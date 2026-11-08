@@ -79,10 +79,7 @@ while IFS= read -r identityFile; do
 	sshParams+=(-o "IdentityFile=${identityFile}")
 done <<< "${sshIdentityFiles}"
 sshParams+=(-o "ControlPath=\"${ownFolderPath}/ssh_connection_socket_%h_%p_%r\"" -o "ControlMaster=auto" \
-	-o "ControlPersist=10")
-
-# Prepare rsync transport shell with ssh parameters (escape for proper space handling)
-rsyncShellParams=(-e "ssh$(for i in "${sshParams[@]}"; do echo -n " '${i}'"; done)")
+	-o "ControlPersist=yes" -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" -o "ConnectTimeout=10")
 
 batchMode="yes"
 if [ "${interactiveMode}" = "yes" ]
@@ -90,12 +87,21 @@ then
 	batchMode="no"
 fi
 
+# Always close our master, including on errors and interruption.
+trap 'ssh "${sshParams[@]}" -o BatchMode=yes -q -O exit "${remote}" >/dev/null 2>&1 || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Check remote connection and create master socket connection
 if ! ssh "${sshParams[@]}" -o BatchMode="${batchMode}" -o ConnectTimeout=10 "${remote}" exit
 then
 	writeToLog "\\n[$(${dateCmd} -Is)] Remote destination is not reachable"
 	exit 1
 fi
+
+# Only the initial connection may ask for credentials.
+sshParams+=(-o BatchMode=yes)
+rsyncShellParams=(-e "ssh$(for i in "${sshParams[@]}"; do printf " '%s'" "${i}"; done)")
 
 # Prepare and validate paths at destination. The SSH user must own (or be
 # able to write) every directory in the destination tree before --delete.
@@ -124,8 +130,10 @@ fi
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending begins\\n"
 
 # Send old pending logs to destination
-rsync "${rsyncShellParams[@]}" -rhvz --remove-source-files --exclude="${logName}" --log-file="${logFile}" \
-	"${tempLogPath}/" "${remoteLogPath}/"
+if ! rsync "${rsyncShellParams[@]}" -rhvz --remove-source-files --exclude="${logName}" --log-file="${logFile}" \
+	"${tempLogPath}/" "${remoteLogPath}/"; then
+	writeToLog "Pending log transfer failed; unsent logs retained locally."
+fi
 
 writeToLog "\\n[$(${dateCmd} -Is)] Old logs sending finished"
 
@@ -172,10 +180,13 @@ ssh "${sshParams[@]}" "${remote}" "touch ${rotationLockFilePath}"
 writeToLog "[$(${dateCmd} -Is)] Backup begins\\n"
 
 # Do the backup
-rsyncOptions=(-achvz --progress --timeout="${timeout}" --delete --no-W \
+rsyncOptions=(-ahvz --progress --timeout="${timeout}" --delete --no-W \
 	--partial-dir="${partialFolderName}" --log-file="${logFile}" \
 	--exclude="${ownFolderPath}" --chmod=Du+rwx,Fu+rw,a+r \
 	--no-owner --no-group --exclude-from="${exclusionFilePath}")
+if [ "${backupChecksum:-no}" = yes ]; then
+	rsyncOptions+=(--checksum)
+fi
 if [ "${backupDepth}" -gt 0 ]; then
 	rsyncOptions+=(--link-dest="${bak1}/")
 fi
@@ -184,7 +195,9 @@ then
 	writeToLog "\\n[$(${dateCmd} -Is)] Backup completed successfully\\n"
 
 	# Clear unneeded partials and lock file
-	ssh "${sshParams[@]}" "${remote}" "rm -rf ${partialFolderPath} ${rotationLockFilePath}"
+	if ! ssh "${sshParams[@]}" "${remote}" "rm -rf ${partialFolderPath} ${rotationLockFilePath}"; then
+		writeToLog "Remote backup cleanup failed; data transfer succeeded."
+	fi
 	rsyncFail=0
 else
 	writeToLog "\\n[$(${dateCmd} -Is)] Backup failed, try again later\\n"
@@ -195,9 +208,8 @@ fi
 if scp "${sshParams[@]}" "${logFile}" "${remoteLogPath}"
 then
 	rm "${logFile}"
+else
+	writeToLog "Log upload failed; retained locally for the next run: ${logFile}"
 fi
-
-# Close master socket connection quietly
-ssh "${sshParams[@]}" -q -O exit "${remote}"
 
 exit "${rsyncFail}"

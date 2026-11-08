@@ -25,6 +25,7 @@ You can set some configuration variables to customize the script:
 * `dst`: Path to target directory. Backups will be placed here. **Must** be an absolute path. Overwritable by parameters.
 * `remote`: *ssh_config* host name to connect to remote host (only for remote version). Overwritable by parameters.
 * `backupDepth`: Number of historical backups to keep. `0` disables rotation and keeps only the current `data` tree; when greater than zero, the oldest backup is deleted at the limit.
+* `backupChecksum`: Set to `yes` for a full content comparison in local and remote backups; defaults to `no` (size and modification time). The dotfiles wrapper exposes this as `.backup --checksum`.
 * `timeout`: Timeout to cancel backup process, if it's not responding.
 * `pathBak0`: Directory inside `dst` where the more recent backup is stored.
 * `partialFolderName`: Directory inside `dst` where partial files are stored.
@@ -130,7 +131,7 @@ Log files per backup operation will be stored at `<dst>/log`.
 ## Used *rsync* flags explanation
 
 * `-a`: archive mode; equals -rlptgoD (no -H,-A,-X). Mandatory for backup usage.
-* `-c`: skip based on checksum, not mod-time & size. More trustworthy, but slower. Omit this flag if you want faster backups, but files without changes in modified time or size won't be detected for include in backup.
+* `--checksum` (`-c`): compare content instead of modification time and size. Enabled with `backupChecksum=yes` for local and remote backups; it reads unchanged files too, so it can be slow. Without it, changes preserving both file size and modification time are not detected.
 * `-h`: output numbers in a human-readable format.
 * `-v`: increase verbosity for logging.
 * `-z`: compress file data during the transfer. Less data transmitted, but slower. Omit this flag when backup target is a local device or a machine in local network (or when you have a high bandwidth to a remote machine).
